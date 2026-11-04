@@ -1,76 +1,88 @@
-name: Malachite GKI 6.1 Android 17
+name: Malachite GKI 6.1 Build
 
 on:
-workflow_dispatch:
+  workflow_dispatch:
 
 permissions:
-contents: read
+  contents: read
 
 jobs:
-build:
-name: Build Malachite GKI
-runs-on: ubuntu-24.04
-timeout-minutes: 360
+  build:
+    name: Build Malachite GKI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
 
-steps:
-  - name: Checkout kernel source
-    uses: actions/checkout@v4
-    with:
-      path: kernel
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          path: kernel
 
-  - name: Install dependencies
-    run: |
-      sudo apt-get update
-      sudo apt-get install -y \
-        bc bison build-essential flex \
-        git curl wget zip unzip \
-        libssl-dev libelf-dev \
-        python3 python3-pip \
-        gcc-aarch64-linux-gnu \
-        gcc-arm-linux-gnueabi \
-        device-tree-compiler \
-        ccache
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential flex \
+            git curl wget zip unzip \
+            libssl-dev libelf-dev \
+            python3 python3-pip \
+            clang llvm lld pahole \
+            device-tree-compiler rsync
 
-  - name: Clone Malachite Android 17 device tree
-    run: |
-      git clone --depth=1 \
-        https://github.com/malachite-project/android_device_xiaomi_malachite.git \
-        device_tree
+      - name: Clone Malachite device tree
+        run: |
+          git clone --depth=1 \
+            https://github.com/malachite-project/android_device_xiaomi_malachite.git \
+            device_tree
 
-  - name: Setup Clang
-    run: |
-      git clone --depth=1 \
-        https://github.com/llvm/llvm-project.git \
-        --filter=blob:none \
-        llvm-project
+      - name: Check sources
+        run: |
+          echo "===== KERNEL ====="
+          cd kernel
+          make -s kernelversion
+          git log -1 --oneline
 
-  - name: Check source structure
-    run: |
-      echo "===== KERNEL SOURCE ====="
-      ls -lah kernel
+          echo "===== DEFCONFIG ====="
+          find arch/arm64/configs -name '*defconfig'
 
-      echo "===== DEVICE TREE ====="
-      ls -lah device_tree
+          echo "===== DEVICE TREE ====="
+          cd ../device_tree
+          git log -1 --oneline
+          find . -maxdepth 3 -type f | head -100
 
-      echo "===== KERNEL CONFIG ====="
-      find kernel -name '*defconfig' -o -name 'build.config*'
+      - name: Configure kernel
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 LLVM=1 gki_defconfig
 
-  - name: Build kernel
-    run: |
-      cd kernel
+      - name: Build kernel
+        run: |
+          cd kernel
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            Image.gz \
+            dtbs \
+            modules
 
-      echo "Kernel source:"
-      make -s kernelversion
+      - name: Verify output
+        run: |
+          cd kernel
+          test -s out/arch/arm64/boot/Image.gz
+          find out/arch/arm64/boot -type f
 
-      echo "Build configuration must be supplied here."
-      echo "Stopping until the correct GKI build target is configured."
+      - name: Package kernel
+        run: |
+          mkdir -p release
+          cp kernel/out/arch/arm64/boot/Image.gz release/
 
-  - name: Upload build logs
-    if: always()
-    uses: actions/upload-artifact@v4
-    with:
-      name: malachite-gki-build-logs
-      path: |
-        kernel/
-        device_tree/
-      retention-days: 3
+          cd release
+          zip -r Malachite-GKI-6.1.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Malachite-GKI-6.1
+          path: release/Malachite-GKI-6.1.zip
+          retention-days: 14
