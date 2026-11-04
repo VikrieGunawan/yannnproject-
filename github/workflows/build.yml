@@ -1,4 +1,4 @@
-name: Malachite GKI 6.1 Build
+name: YannzProject - Malachite GKI 6.1
 
 on:
   workflow_dispatch:
@@ -8,17 +8,21 @@ permissions:
 
 jobs:
   build:
-    name: Build Malachite GKI
+    name: Build GKI + AnyKernel3
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+
     steps:
-      - name: Checkout kernel
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           path: kernel
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -26,63 +30,147 @@ jobs:
             git curl wget zip unzip \
             libssl-dev libelf-dev \
             python3 python3-pip \
-            clang llvm lld pahole \
-            device-tree-compiler rsync
+            clang llvm lld \
+            pahole lz4 \
+            device-tree-compiler \
+            rsync ccache
 
-      - name: Clone Malachite device tree
+      - name: Clone Malachite Device Tree
         run: |
           git clone --depth=1 \
-            https://github.com/malachite-project/android_device_xiaomi_malachite.git \
+            -b lineage-23.2 \
+            https://github.com/malachite-dev/android_device_xiaomi_malachite.git \
             device_tree
 
-      - name: Check sources
-        run: |
-          echo "===== KERNEL ====="
-          cd kernel
-          make -s kernelversion
-          git log -1 --oneline
-
-          echo "===== DEFCONFIG ====="
-          find arch/arm64/configs -name '*defconfig'
-
           echo "===== DEVICE TREE ====="
-          cd ../device_tree
+          git -C device_tree log -1 --oneline
+
+          echo "===== BOARD CONFIG ====="
+          grep -E \
+            'TARGET_KERNEL_CONFIG|BOARD_KERNEL_IMAGE_NAME|TARGET_KERNEL_SOURCE|TARGET_BOARD_PLATFORM' \
+            device_tree/BoardConfig.mk
+
+      - name: Clone AnyKernel3
+        run: |
+          git clone --depth=1 \
+            https://github.com/osm0sis/AnyKernel3.git \
+            AnyKernel3
+
+      - name: Verify Kernel Source
+        run: |
+          cd kernel
+
+          echo "===== KERNEL VERSION ====="
+          make -s kernelversion
+
+          echo "===== SOURCE COMMIT ====="
           git log -1 --oneline
-          find . -maxdepth 3 -type f | head -100
 
-      - name: Configure kernel
+          test -f arch/arm64/configs/gki_defconfig
+
+      - name: Configure Kernel
         run: |
           cd kernel
-          make O=out ARCH=arm64 LLVM=1 gki_defconfig
 
-      - name: Build kernel
+          make O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            gki_defconfig
+
+      - name: Build Kernel
         run: |
           cd kernel
+
           make -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
             LLVM=1 \
-            Image.gz \
-            dtbs \
-            modules
+            Image dtbs modules
 
-      - name: Verify output
+      - name: Verify Kernel
         run: |
-          cd kernel
-          test -s out/arch/arm64/boot/Image.gz
-          find out/arch/arm64/boot -type f
+          test -s kernel/out/arch/arm64/boot/Image
 
-      - name: Package kernel
+          echo "===== KERNEL OUTPUT ====="
+          ls -lh kernel/out/arch/arm64/boot/
+
+      - name: Compress Kernel LZ4
         run: |
           mkdir -p release
-          cp kernel/out/arch/arm64/boot/Image.gz release/
 
-          cd release
-          zip -r Malachite-GKI-6.1.zip .
+          lz4 -l -12 -f \
+            kernel/out/arch/arm64/boot/Image \
+            release/Image.lz4
 
-      - name: Upload artifact
+          cp kernel/out/arch/arm64/boot/Image \
+            AnyKernel3/Image
+
+      - name: Configure AnyKernel3
+        run: |
+          cat > AnyKernel3/anykernel.sh <<'EOF'
+          properties() { '
+          kernel.string=YannzProject GKI 6.1
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=malachite
+          device.name2=missi
+          supported.versions=
+          '; }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          dump_boot;
+          write_boot;
+          EOF
+
+      - name: Build AnyKernel3 ZIP
+        run: |
+          cd AnyKernel3
+
+          zip -r9 ../release/AnyKernel3-Malachite.zip . \
+            -x '.git/*' \
+            -x 'README.md' \
+            -x '*placeholder*'
+
+      - name: Save Build Information
+        run: |
+          echo "Kernel version:" > release/BUILD_INFO.txt
+          make -s -C kernel kernelversion >> release/BUILD_INFO.txt
+
+          echo "Kernel commit:" >> release/BUILD_INFO.txt
+          git -C kernel rev-parse HEAD >> release/BUILD_INFO.txt
+
+          echo "Device tree commit:" >> release/BUILD_INFO.txt
+          git -C device_tree rev-parse HEAD >> release/BUILD_INFO.txt
+
+          cp kernel/out/.config release/kernel.config
+
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Malachite-GKI-6.1
-          path: release/Malachite-GKI-6.1.zip
+          name: YannzProject-Malachite-GKI-6.1
+          path: |
+            release/AnyKernel3-Malachite.zip
+            release/Image.lz4
+            release/BUILD_INFO.txt
+            release/kernel.config
           retention-days: 14
+
+      - name: Upload Build Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Malachite-GKI-Build-Logs
+          path: |
+            kernel/out/.config
+            kernel/out/arch/arm64/boot/
+          if-no-files-found: ignore
+          retention-days: 7
