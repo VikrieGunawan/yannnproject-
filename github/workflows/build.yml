@@ -1,0 +1,88 @@
+name: Malachite GKI 6.1 Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Malachite GKI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          path: kernel
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential flex \
+            git curl wget zip unzip \
+            libssl-dev libelf-dev \
+            python3 python3-pip \
+            clang llvm lld pahole \
+            device-tree-compiler rsync
+
+      - name: Clone Malachite device tree
+        run: |
+          git clone --depth=1 \
+            https://github.com/malachite-project/android_device_xiaomi_malachite.git \
+            device_tree
+
+      - name: Check sources
+        run: |
+          echo "===== KERNEL ====="
+          cd kernel
+          make -s kernelversion
+          git log -1 --oneline
+
+          echo "===== DEFCONFIG ====="
+          find arch/arm64/configs -name '*defconfig'
+
+          echo "===== DEVICE TREE ====="
+          cd ../device_tree
+          git log -1 --oneline
+          find . -maxdepth 3 -type f | head -100
+
+      - name: Configure kernel
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 LLVM=1 gki_defconfig
+
+      - name: Build kernel
+        run: |
+          cd kernel
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            Image.gz \
+            dtbs \
+            modules
+
+      - name: Verify output
+        run: |
+          cd kernel
+          test -s out/arch/arm64/boot/Image.gz
+          find out/arch/arm64/boot -type f
+
+      - name: Package kernel
+        run: |
+          mkdir -p release
+          cp kernel/out/arch/arm64/boot/Image.gz release/
+
+          cd release
+          zip -r Malachite-GKI-6.1.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Malachite-GKI-6.1
+          path: release/Malachite-GKI-6.1.zip
+          retention-days: 14
