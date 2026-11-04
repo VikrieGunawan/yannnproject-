@@ -1,83 +1,76 @@
-name: Build GKI Kernel
+name: Malachite GKI 6.1 Android 17
 
 on:
-  push:
-    branches: [main, master]
-  workflow_dispatch:
+workflow_dispatch:
+
+permissions:
+contents: read
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04  # Menggunakan Ubuntu LTS 22.04
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup
-        run: |
-          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-          echo "BUILD_DIR=/tmp/gki" >> $GITHUB_ENV
-      
-      - name: Free Space
-        run: |
-          sudo rm -rf /usr/local/lib/android /opt/ghc 2>/dev/null || true
-          sudo apt-get clean
-      
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y build-essential libssl-dev libelf-dev bison flex bc u-boot-tools cpio pahole git zip
-      
-      - name: Prepare Build Dir
-        run: mkdir -p $BUILD_DIR
-      
-      - name: Clone Kernel
-        run: |
-          cd $BUILD_DIR
-          git clone https://android.googlesource.com/kernel/common --depth=1 -b android14-6.6 kernel
-      
-      - name: Build Kernel
-        run: |
-          cd $BUILD_DIR/kernel
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          make gki_defconfig
-          timeout 120m make -j$(nproc) || { echo "Build failed"; exit 1; }
-      
-      - name: Copy Kernel
-        run: cp $BUILD_DIR/kernel/arch/arm64/boot/Image $BUILD_DIR/Image
-      
-      - name: Clone AnyKernel3
-        run: cd $BUILD_DIR && git clone https://github.com/osm0sis/AnyKernel3.git ak3
-      
-      - name: Update Anykernel Script
-        run: |
-          cd $BUILD_DIR/ak3
-          cp anykernel.sh anykernel.sh.bak
-          sed -i 's/device.name1=.*/device.name1=malachite/g' anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=malachite_global/g' anykernel.sh
-      
-      - name: Copy Kernel to AK3
-        run: cp $BUILD_DIR/Image $BUILD_DIR/ak3/
-      
-      - name: Create ZIP
-        run: |
-          cd $BUILD_DIR
-          ZIP_NAME="yannnz34u-malachite-$TIMESTAMP.zip"
-          zip -r9q $ZIP_NAME ak3/ -x "ak3/.git*"
-          mkdir -p output
-          cp $ZIP_NAME output/
-          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-      
-      - name: Checksums
-        run: |
-          cd $BUILD_DIR
-          sha256sum $ZIP_NAME > output/SHA256.txt
-          md5sum $ZIP_NAME > output/MD5.txt
-      
-      - name: Upload
-        uses: actions/upload-artifact@v3
-        with:
-          name: gki-${{ env.TIMESTAMP }}
-          path: $BUILD_DIR/output/
-          retention-days: 30
+build:
+name: Build Malachite GKI
+runs-on: ubuntu-24.04
+timeout-minutes: 360
+
+steps:
+  - name: Checkout kernel source
+    uses: actions/checkout@v4
+    with:
+      path: kernel
+
+  - name: Install dependencies
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y \
+        bc bison build-essential flex \
+        git curl wget zip unzip \
+        libssl-dev libelf-dev \
+        python3 python3-pip \
+        gcc-aarch64-linux-gnu \
+        gcc-arm-linux-gnueabi \
+        device-tree-compiler \
+        ccache
+
+  - name: Clone Malachite Android 17 device tree
+    run: |
+      git clone --depth=1 \
+        https://github.com/malachite-project/android_device_xiaomi_malachite.git \
+        device_tree
+
+  - name: Setup Clang
+    run: |
+      git clone --depth=1 \
+        https://github.com/llvm/llvm-project.git \
+        --filter=blob:none \
+        llvm-project
+
+  - name: Check source structure
+    run: |
+      echo "===== KERNEL SOURCE ====="
+      ls -lah kernel
+
+      echo "===== DEVICE TREE ====="
+      ls -lah device_tree
+
+      echo "===== KERNEL CONFIG ====="
+      find kernel -name '*defconfig' -o -name 'build.config*'
+
+  - name: Build kernel
+    run: |
+      cd kernel
+
+      echo "Kernel source:"
+      make -s kernelversion
+
+      echo "Build configuration must be supplied here."
+      echo "Stopping until the correct GKI build target is configured."
+
+  - name: Upload build logs
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: malachite-gki-build-logs
+      path: |
+        kernel/
+        device_tree/
+      retention-days: 3
