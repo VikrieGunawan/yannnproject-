@@ -1,4 +1,4 @@
-name: YannzProject - Malachite GKI 6.1
+name: YannzProject - Malachite GKI 6.1.174
 
 on:
   workflow_dispatch:
@@ -8,21 +8,18 @@ permissions:
 
 jobs:
   build:
-    name: Build GKI + AnyKernel3
+    name: Build GKI 6.1.174 + AnyKernel3
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
-    env:
-      ARCH: arm64
-      SUBARCH: arm64
-
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Kernel Source (Branch main)
         uses: actions/checkout@v4
         with:
+          ref: main
           path: kernel
 
-      - name: Install Dependencies
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -35,84 +32,54 @@ jobs:
             device-tree-compiler \
             rsync ccache
 
-      - name: Clone Malachite Device Tree
-        run: |
-          git clone --depth=1 \
-            -b lineage-23.2 \
-            https://github.com/malachite-dev/android_device_xiaomi_malachite.git \
-            device_tree
-
-          echo "===== DEVICE TREE ====="
-          git -C device_tree log -1 --oneline
-
-          echo "===== BOARD CONFIG ====="
-          grep -E \
-            'TARGET_KERNEL_CONFIG|BOARD_KERNEL_IMAGE_NAME|TARGET_KERNEL_SOURCE|TARGET_BOARD_PLATFORM' \
-            device_tree/BoardConfig.mk
-
       - name: Clone AnyKernel3
         run: |
-          git clone --depth=1 \
-            https://github.com/osm0sis/AnyKernel3.git \
-            AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
 
-      - name: Verify Kernel Source
+      - name: Verify Kernel Version
         run: |
           cd kernel
-
           echo "===== KERNEL VERSION ====="
           make -s kernelversion
-
-          echo "===== SOURCE COMMIT ====="
           git log -1 --oneline
 
-          test -f arch/arm64/configs/gki_defconfig
-
-      - name: Configure Kernel
+      - name: Configure GKI Defconfig
         run: |
           cd kernel
-
           make O=out \
             ARCH=arm64 \
             LLVM=1 \
+            LLVM_IAS=1 \
             gki_defconfig
 
-      - name: Build Kernel
+      - name: Compile GKI Kernel
         run: |
           cd kernel
-
           make -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
             LLVM=1 \
-            Image dtbs modules
+            LLVM_IAS=1 \
+            Image
 
-      - name: Verify Kernel
+      - name: Verify Kernel Image Output
         run: |
           test -s kernel/out/arch/arm64/boot/Image
+          echo "===== KERNEL OUTPUT SIZE ====="
+          ls -lh kernel/out/arch/arm64/boot/Image
 
-          echo "===== KERNEL OUTPUT ====="
-          ls -lh kernel/out/arch/arm64/boot/
-
-      - name: Compress Kernel LZ4
+      - name: Prepare AnyKernel3 Package (Fix GKI Ramdisk Issue)
         run: |
           mkdir -p release
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/Image
 
-          lz4 -l -12 -f \
-            kernel/out/arch/arm64/boot/Image \
-            release/Image.lz4
-
-          cp kernel/out/arch/arm64/boot/Image \
-            AnyKernel3/Image
-
-      - name: Configure AnyKernel3
-        run: |
-          cat > AnyKernel3/anykernel.sh <<'EOF'
+          # Buat anykernel.sh khusus GKI (tanpa unpack_ramdisk)
+          cat > AnyKernel3/anykernel.sh << 'EOF'
           properties() { '
-          kernel.string=YannzProject GKI 6.1
+          kernel.string=YannzProject GKI 6.1.174 (Universal Malachite)
           do.devicecheck=1
           do.modules=0
-          do.systemless=0
+          do.systemless=1
           do.cleanup=1
           do.cleanuponabort=0
           device.name1=malachite
@@ -120,57 +87,31 @@ jobs:
           supported.versions=
           '; }
 
-          BLOCK=boot;
-          IS_SLOT_DEVICE=1;
-          RAMDISK_COMPRESSION=auto;
-          PATCH_VBMETA_FLAG=auto;
+          # Konfigurasi GKI boot partition
+          block=boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
 
+          # Import AnyKernel3 core
           . tools/ak3-core.sh;
 
-          dump_boot;
-          write_boot;
+          # Gunakan split_boot & flash_boot untuk GKI (Fix 'No ramdisk found')
+          split_boot;
+          flash_boot;
           EOF
 
-      - name: Build AnyKernel3 ZIP
+      - name: Pack AnyKernel3 ZIP
         run: |
           cd AnyKernel3
-
-          zip -r9 ../release/AnyKernel3-Malachite.zip . \
+          zip -r9 ../release/YannzProject-Malachite-GKI-6.1.174.zip . \
             -x '.git/*' \
             -x 'README.md' \
             -x '*placeholder*'
 
-      - name: Save Build Information
-        run: |
-          echo "Kernel version:" > release/BUILD_INFO.txt
-          make -s -C kernel kernelversion >> release/BUILD_INFO.txt
-
-          echo "Kernel commit:" >> release/BUILD_INFO.txt
-          git -C kernel rev-parse HEAD >> release/BUILD_INFO.txt
-
-          echo "Device tree commit:" >> release/BUILD_INFO.txt
-          git -C device_tree rev-parse HEAD >> release/BUILD_INFO.txt
-
-          cp kernel/out/.config release/kernel.config
-
-      - name: Upload Build Artifacts
+      - name: Upload Flashable ZIP Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YannzProject-Malachite-GKI-6.1
-          path: |
-            release/AnyKernel3-Malachite.zip
-            release/Image.lz4
-            release/BUILD_INFO.txt
-            release/kernel.config
+          name: YannzProject-Malachite-GKI-6.1.174
+          path: release/YannzProject-Malachite-GKI-6.1.174.zip
           retention-days: 14
-
-      - name: Upload Build Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Malachite-GKI-Build-Logs
-          path: |
-            kernel/out/.config
-            kernel/out/arch/arm64/boot/
-          if-no-files-found: ignore
-          retention-days: 7
