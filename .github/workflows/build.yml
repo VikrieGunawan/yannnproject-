@@ -32,9 +32,9 @@ jobs:
             device-tree-compiler \
             rsync ccache
 
-      - name: Clone AnyKernel3 from KernelSU-Next
+      - name: Clone AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/KernelSU-Next/AnyKernel3.git AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
 
       - name: Verify Kernel Version
         run: |
