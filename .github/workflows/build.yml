@@ -67,13 +67,11 @@ jobs:
           test -s kernel/out/arch/arm64/boot/Image
           echo "===== KERNEL OUTPUT SIZE ====="
           ls -lh kernel/out/arch/arm64/boot/Image
-
-      - name: Prepare AnyKernel3 Package (Fix GKI Ramdisk Issue)
+- name: Prepare AnyKernel3 Package
         run: |
           mkdir -p release
           cp kernel/out/arch/arm64/boot/Image AnyKernel3/Image
 
-          # Buat anykernel.sh khusus GKI (tanpa unpack_ramdisk)
           cat > AnyKernel3/anykernel.sh << 'EOF'
           properties() { '
           kernel.string=YannzProject GKI 6.1.174 (Universal Malachite)
@@ -87,6 +85,24 @@ jobs:
           supported.versions=
           '; }
 
+          BLOCK=boot;
+          IS_SLOT_DEVICE=auto;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          split_boot;
+          flash_boot;
+          EOF
+
+      - name: Pack AnyKernel3 ZIP
+        run: |
+          cd AnyKernel3
+          zip -r9 ../release/YannzProject-Malachite-GKI-6.1.174.zip . \
+            -x '.git/*' \
+            -x 'README.md' \
+            -x '*placeholder*'
           # Konfigurasi GKI boot partition
           block=boot;
           is_slot_device=auto;
