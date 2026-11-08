@@ -32,9 +32,9 @@ jobs:
             device-tree-compiler \
             rsync ccache
 
-      - name: Clone AnyKernel3
+      - name: Clone AnyKernel3 from KernelSU-Next
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          git clone --depth=1 https://github.com/KernelSU-Next/AnyKernel3.git AnyKernel3
 
       - name: Verify Kernel Version
         run: |
@@ -67,7 +67,8 @@ jobs:
           test -s kernel/out/arch/arm64/boot/Image
           echo "===== KERNEL OUTPUT SIZE ====="
           ls -lh kernel/out/arch/arm64/boot/Image
-- name: Prepare AnyKernel3 Package
+
+      - name: Prepare AnyKernel3 Package
         run: |
           mkdir -p release
           cp kernel/out/arch/arm64/boot/Image AnyKernel3/Image
@@ -92,27 +93,6 @@ jobs:
 
           . tools/ak3-core.sh;
 
-          split_boot;
-          flash_boot;
-          EOF
-
-      - name: Pack AnyKernel3 ZIP
-        run: |
-          cd AnyKernel3
-          zip -r9 ../release/YannzProject-Malachite-GKI-6.1.174.zip . \
-            -x '.git/*' \
-            -x 'README.md' \
-            -x '*placeholder*'
-          # Konfigurasi GKI boot partition
-          block=boot;
-          is_slot_device=auto;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
-
-          # Import AnyKernel3 core
-          . tools/ak3-core.sh;
-
-          # Gunakan split_boot & flash_boot untuk GKI (Fix 'No ramdisk found')
           split_boot;
           flash_boot;
           EOF
