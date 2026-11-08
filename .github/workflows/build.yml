@@ -3,11 +3,17 @@ name: YannzProject - Malachite GKI 6.1.174
 on:
   workflow_dispatch:
     inputs:
-      use_neutron_clang:
-        description: 'Gunakan Toolchain Neutron Clang (Release 06092026)'
-        required: false
-        type: boolean
-        default: true
+      clang_choice:
+        description: 'Pilih Clang Toolchain Compiler'
+        required: true
+        type: choice
+        default: 'aosp_r584948'
+        options:
+          - 'aosp_r584948'
+          - 'neutron'
+          - 'clang_19'
+          - 'clang_22'
+          - 'system'
       enable_bbrv3:
         description: 'Aktifkan TCP BBRv3 (Google BBR v3 Congestion Control)'
         required: false
@@ -55,25 +61,65 @@ jobs:
             python3 python3-pip \
             pahole lz4 \
             device-tree-compiler \
-            rsync ccache
+            rsync ccache zstd
 
-      # Toggle: Setup Toolchain (Neutron Clang vs System Clang)
+      # Step penyiapan Toolchain berdasarkan pilihan di menu workflow
       - name: Setup Compiler Toolchain
         run: |
-          if [ "${{ github.event.inputs.use_neutron_clang }}" = "true" ]; then
-            echo "==> Mengunduh & Menyiapkan Neutron Clang (06092026)..."
-            mkdir -p neutron-clang
-            cd neutron-clang
-            # Download & Extract Neutron Clang
-            curl -LO https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst || true
-            if [ -f neutron-clang-06092026.tar.zst ]; then
+          mkdir -p toolchain
+          TOOLCHAIN_DIR="$GITHUB_WORKSPACE/toolchain"
+
+          case "${{ github.event.inputs.clang_choice }}" in
+            "aosp_r584948")
+              echo "==> Mengunduh AOSP Clang r584948..."
+              git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$TOOLCHAIN_DIR/aosp-clang" -b mirror-goog-main-llvm-toolchain-source
+              echo "$TOOLCHAIN_DIR/aosp-clang/clang-r584948/bin" >> $GITHUB_PATH
+              ;;
+
+            "neutron")
+              echo "==> Mengunduh Neutron Clang (06092026)..."
+              mkdir -p "$TOOLCHAIN_DIR/neutron"
+              cd "$TOOLCHAIN_DIR/neutron"
+              curl -LO https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst
               tar -I zstd -xf neutron-clang-06092026.tar.zst
-            fi
-            echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
-          else
-            echo "==> Menggunakan System Clang bawaan Ubuntu..."
-            sudo apt-get install -y clang llvm lld
-          fi
+              echo "$TOOLCHAIN_DIR/neutron/bin" >> $GITHUB_PATH
+              ;;
+
+            "clang_19")
+              echo "==> Memasang LLVM Clang 19..."
+              wget https://apt.llvm.org/llvm.sh
+              chmod +x llvm.sh
+              sudo ./llvm.sh 19
+              sudo apt-get install -y lld-19 llvm-19
+              mkdir -p "$TOOLCHAIN_DIR/clang-19-bin"
+              ln -sf $(which clang-19) "$TOOLCHAIN_DIR/clang-19-bin/clang"
+              ln -sf $(which ld.lld-19) "$TOOLCHAIN_DIR/clang-19-bin/ld.lld"
+              ln -sf $(which llvm-ar-19) "$TOOLCHAIN_DIR/clang-19-bin/llvm-ar"
+              ln -sf $(which llvm-objcopy-19) "$TOOLCHAIN_DIR/clang-19-bin/llvm-objcopy"
+              ln -sf $(which llvm-strip-19) "$TOOLCHAIN_DIR/clang-19-bin/llvm-strip"
+              echo "$TOOLCHAIN_DIR/clang-19-bin" >> $GITHUB_PATH
+              ;;
+
+            "clang_22")
+              echo "==> Mengunduh LLVM Clang 22..."
+              mkdir -p "$TOOLCHAIN_DIR/clang-22"
+              cd "$TOOLCHAIN_DIR/clang-22"
+              curl -LO https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0/clang+llvm-22.1.0-x86_64-linux-gnu.tar.xz || \
+              curl -LO https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0/clang+llvm-22.1.0-x86_64-pc-linux-gnu.tar.xz || true
+              if [ -f *.tar.xz ]; then
+                tar -xf *.tar.xz --strip-components=1
+                echo "$TOOLCHAIN_DIR/clang-22/bin" >> $GITHUB_PATH
+              else
+                echo "Gagal mengunduh Clang 22 tarball, fallback ke system clang."
+                sudo apt-get install -y clang llvm lld
+              fi
+              ;;
+
+            "system")
+              echo "==> Menggunakan System Clang bawaan Ubuntu..."
+              sudo apt-get install -y clang llvm lld
+              ;;
+          esac
 
       - name: Clone AnyKernel3
         run: |
@@ -89,9 +135,11 @@ jobs:
             cp -r re-kernel/Integrate/* kernel/
           fi
 
-      - name: Verify Kernel Version
+      - name: Verify Kernel Version & Compiler
         run: |
           cd kernel
+          echo "===== COMPILER VERSION ====="
+          clang --version
           echo "===== KERNEL VERSION ====="
           make -s kernelversion
           git log -1 --oneline
@@ -99,11 +147,6 @@ jobs:
       - name: Configure GKI Defconfig & Features
         run: |
           cd kernel
-          
-          # Tentukan Toolchain yang digunakan
-          if [ "${{ github.event.inputs.use_neutron_clang }}" = "true" ]; then
-            export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
-          fi
 
           make O=out \
             ARCH=arm64 \
@@ -165,10 +208,6 @@ jobs:
       - name: Compile GKI Kernel
         run: |
           cd kernel
-          if [ "${{ github.event.inputs.use_neutron_clang }}" = "true" ]; then
-            export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
-          fi
-
           make -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
