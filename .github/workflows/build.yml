@@ -2,6 +2,32 @@ name: YannzProject - Malachite GKI 6.1.174
 
 on:
   workflow_dispatch:
+    inputs:
+      use_neutron_clang:
+        description: 'Gunakan Toolchain Neutron Clang (Release 06092026)'
+        required: false
+        type: boolean
+        default: true
+      enable_bbrv3:
+        description: 'Aktifkan TCP BBRv3 (Google BBR v3 Congestion Control)'
+        required: false
+        type: boolean
+        default: true
+      enable_rekernel:
+        description: 'Integrasi Re-Kernel (Sakion-Team)'
+        required: false
+        type: boolean
+        default: false
+      enable_susfs:
+        description: 'Aktifkan Fitur Patch SUSFS (untuk KernelSU / susfs4ksu)'
+        required: false
+        type: boolean
+        default: false
+      enable_wifi_bt:
+        description: 'Aktifkan driver Wi-Fi & Bluetooth built-in'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -27,14 +53,41 @@ jobs:
             git curl wget zip unzip \
             libssl-dev libelf-dev \
             python3 python3-pip \
-            clang llvm lld \
             pahole lz4 \
             device-tree-compiler \
             rsync ccache
 
+      # Toggle: Setup Toolchain (Neutron Clang vs System Clang)
+      - name: Setup Compiler Toolchain
+        run: |
+          if [ "${{ github.event.inputs.use_neutron_clang }}" = "true" ]; then
+            echo "==> Mengunduh & Menyiapkan Neutron Clang (06092026)..."
+            mkdir -p neutron-clang
+            cd neutron-clang
+            # Download & Extract Neutron Clang
+            curl -LO https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst || true
+            if [ -f neutron-clang-06092026.tar.zst ]; then
+              tar -I zstd -xf neutron-clang-06092026.tar.zst
+            fi
+            echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
+          else
+            echo "==> Menggunakan System Clang bawaan Ubuntu..."
+            sudo apt-get install -y clang llvm lld
+          fi
+
       - name: Clone AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+
+      # Toggle: Integrasi Sakion-Team Re-Kernel
+      - name: Patch Re-Kernel Integration
+        if: ${{ github.event.inputs.enable_rekernel == 'true' }}
+        run: |
+          echo "==> Mengkloning & Memasang Re-Kernel..."
+          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git re-kernel
+          if [ -d "re-kernel/Integrate" ]; then
+            cp -r re-kernel/Integrate/* kernel/
+          fi
 
       - name: Verify Kernel Version
         run: |
@@ -43,18 +96,79 @@ jobs:
           make -s kernelversion
           git log -1 --oneline
 
-      - name: Configure GKI Defconfig
+      - name: Configure GKI Defconfig & Features
         run: |
           cd kernel
+          
+          # Tentukan Toolchain yang digunakan
+          if [ "${{ github.event.inputs.use_neutron_clang }}" = "true" ]; then
+            export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
+          fi
+
           make O=out \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             gki_defconfig
 
+          # Toggle: Wi-Fi & Bluetooth
+          if [ "${{ github.event.inputs.enable_wifi_bt }}" = "true" ]; then
+            echo "==> Mengaktifkan driver Wi-Fi & Bluetooth..."
+            ./scripts/config --file out/.config \
+              -e CFG80211 \
+              -e NL80211_TESTMODE \
+              -e CFG80211_WEXT \
+              -e MAC80211 \
+              -e RFKILL \
+              -e RFKILL_LEDS \
+              -e RFKILL_INPUT \
+              -e RFKILL_GPIO \
+              -e BT \
+              -e BT_BREDR \
+              -e BT_RFCOMM \
+              -e BT_RFCOMM_TTY \
+              -e BT_HIDP \
+              -e BT_LE \
+              -e BT_HCIUART \
+              -e BT_HCIUART_SERDEV \
+              -e BT_HCIUART_H4 \
+              -e BT_HCIUART_LL \
+              -e BT_HCIUART_BCM \
+              -e BT_HCIUART_QCA
+          fi
+
+          # Toggle: BBRv3 Congestion Control
+          if [ "${{ github.event.inputs.enable_bbrv3 }}" = "true" ]; then
+            echo "==> Mengaktifkan TCP BBRv3..."
+            ./scripts/config --file out/.config \
+              -e TCP_CONG_BBR \
+              -d TCP_CONG_CUBIC \
+              --set-str DEFAULT_TCP_CONG bbr
+          fi
+
+          # Toggle: SUSFS support config
+          if [ "${{ github.event.inputs.enable_susfs }}" = "true" ]; then
+            echo "==> Mengaktifkan Kconfig opsi SUSFS..."
+            ./scripts/config --file out/.config \
+              -e KSU_SUSFS \
+              -e KSU_SUSFS_HAS_MAGIC_MOUNT \
+              -e KSU_SUSFS_SUS_PATH \
+              -e KSU_SUSFS_SUS_MOUNT
+          fi
+
+          make O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig
+
       - name: Compile GKI Kernel
         run: |
           cd kernel
+          if [ "${{ github.event.inputs.use_neutron_clang }}" = "true" ]; then
+            export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
+          fi
+
           make -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
