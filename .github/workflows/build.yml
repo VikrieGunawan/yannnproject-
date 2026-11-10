@@ -74,13 +74,6 @@ jobs:
           patch -p1 --forward -r - < susfs_src/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch || true
           rm -f android/abi_gki_protected_exports_*
 
-      - name: Install Re-Kernel
-        if: ${{ inputs.enable_rekernel }}
-        run: |
-          cd kernel
-          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git rekernel_repo
-          bash rekernel_repo/Integrate/patches.sh || true
-
       - name: Verify Kernel Source
         run: |
           cd kernel
@@ -95,6 +88,9 @@ jobs:
 
           ./scripts/config --file out/.config \
             -d MODULE_SIG_PROTECT \
+            -e MODULES \
+            -e MODULE_UNLOAD \
+            -d MODULE_SIG_FORCE \
             -e KSU \
             -e KSU_SUSFS \
             -e KSU_SUSFS_HAS_MAGIC_MOUNT \
@@ -110,14 +106,12 @@ jobs:
             -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
             -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
             -e KSU_SUSFS_OPEN_REDIRECT \
-            -e KSU_SUSFS_SUS_MAP \
-            -e REKERNEL \
-            -d REKERNEL_NETWORK
+            -e KSU_SUSFS_SUS_MAP
 
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
           echo "===== FINAL CONFIG ====="
-          grep -E '^CONFIG_(KSU|KSU_SUSFS|REKERNEL)=' out/.config || true
+          grep -E '^CONFIG_(KSU|KSU_SUSFS)=' out/.config || true
 
       - name: Compile GKI Kernel
         run: |
@@ -134,6 +128,25 @@ jobs:
           test -s kernel/out/arch/arm64/boot/Image
           echo "===== KERNEL OUTPUT SIZE ====="
           ls -lh kernel/out/arch/arm64/boot/Image
+
+      - name: Build Re:Kernel LKM
+        if: ${{ inputs.enable_rekernel }}
+        continue-on-error: true
+        run: |
+          set -e
+          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git Re-Kernel
+          cp Re-Kernel/LKM-Source/*.c Re-Kernel/LKM-Source/*.h kernel/drivers/android/
+          cat Re-Kernel/LKM-Source/Makefile >> kernel/drivers/android/Makefile
+          make -C kernel O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 modules_prepare
+          make -C kernel O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 M=drivers/android modules
+          KO="$(find kernel/out/drivers/android kernel/drivers/android -name 'rekernel.ko' -print -quit)"
+          if [ -n "$KO" ] && [ -f "$KO" ]; then
+            mkdir -p rekernel-mod
+            cp "$KO" rekernel-mod/re-kernel.ko
+            echo "REKERNEL_OK=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Re-Kernel module build skipped"
+          fi
 
       - name: Prepare AnyKernel3
         run: |
@@ -173,9 +186,42 @@ jobs:
             -x 'README.md' \
             -x '*placeholder*'
 
+      - name: Pack Re:Kernel Module
+        if: ${{ inputs.enable_rekernel && env.REKERNEL_OK == '1' }}
+        run: |
+          set -e
+          mkdir -p release
+          cd rekernel-mod
+          cat << 'EOF' > module.prop
+          id=rekernel
+          name=Re:Kernel LKM
+          version=6.1.174
+          versionCode=1
+          author=Sakion
+          description=Re:Kernel LKM for Malachite GKI 6.1.174
+          EOF
+          cat << 'EOF' > service.sh
+          MODDIR=${0%/*}
+          until [ "$(getprop sys.boot_completed)" = "1" ]; do
+            sleep 2
+          done
+          sleep 10
+          lsmod | grep -q 're.kernel' || insmod "$MODDIR/re-kernel.ko"
+          EOF
+          chmod 755 service.sh
+          zip -r9 ../release/Re-Kernel-LKM-YannzProject.zip .
+
       - name: Upload Kernel ZIP
         uses: actions/upload-artifact@v4
         with:
           name: YannzProject-Malachite-GKI-6.1.174
           path: release/YannzProject-Malachite-GKI-6.1.174.zip
+          retention-days: 14
+
+      - name: Upload Re:Kernel Module
+        if: ${{ inputs.enable_rekernel && env.REKERNEL_OK == '1' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Re-Kernel-LKM-YannzProject
+          path: release/Re-Kernel-LKM-YannzProject.zip
           retention-days: 14
