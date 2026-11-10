@@ -2,24 +2,42 @@ name: YannzProject - Malachite GKI 6.1.174
 
 on:
   workflow_dispatch:
+    inputs:
+      enable_susfs:
+        description: "Enable SUSFS"
+        type: boolean
+        default: true
+      enable_rekernel:
+        description: "Enable Re-Kernel"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build GKI 6.1.174 + AnyKernel3
+    name: Malachite GKI 6.1.174
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
     steps:
-      - name: Checkout Kernel Source (Branch main)
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           ref: main
           path: kernel
 
-      - name: Install Build Dependencies
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -28,15 +46,42 @@ jobs:
             libssl-dev libelf-dev \
             python3 python3-pip \
             clang llvm lld \
-            pahole lz4 \
+            pahole lz4 kmod \
             device-tree-compiler \
-            rsync ccache
+            rsync ccache patch
 
       - name: Clone AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
 
-      - name: Verify Kernel Version
+      - name: Install KernelSU-Next
+        run: |
+          cd kernel
+          git clone --depth=1 -b dev-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU-Next
+          sed -i '/bool is_manager_apk/{n;s/.*/{\n\treturn true;/}' KernelSU-Next/kernel/manager/apk_sign.c
+          ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
+          grep -q 'kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+      - name: Install SUSFS
+        if: ${{ inputs.enable_susfs }}
+        run: |
+          cd kernel
+          git clone --depth=1 -b gki-android14-6.1 https://gitlab.com/pershoot/susfs4ksu.git susfs_src
+          cp -f susfs_src/kernel_patches/fs/susfs.c fs/
+          cp -f susfs_src/kernel_patches/include/linux/susfs.h include/linux/
+          cp -f susfs_src/kernel_patches/include/linux/susfs_def.h include/linux/
+          patch -p1 --forward -r - < susfs_src/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch || true
+          rm -f android/abi_gki_protected_exports_*
+
+      - name: Install Re-Kernel
+        if: ${{ inputs.enable_rekernel }}
+        run: |
+          cd kernel
+          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git rekernel_repo
+          bash rekernel_repo/Integrate/patches.sh || true
+
+      - name: Verify Kernel Source
         run: |
           cd kernel
           echo "===== KERNEL VERSION ====="
@@ -46,20 +91,33 @@ jobs:
       - name: Configure GKI Defconfig
         run: |
           cd kernel
-          make O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            gki_defconfig
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
           ./scripts/config --file out/.config \
-            -d MODULE_SIG_PROTECT
+            -d MODULE_SIG_PROTECT \
+            -e KSU \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_HAS_MAGIC_MOUNT \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+            -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SUS_OVERLAYFS \
+            -e KSU_SUSFS_TRY_UMOUNT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -e REKERNEL \
+            -d REKERNEL_NETWORK
 
-          make O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            olddefconfig
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          echo "===== FINAL CONFIG ====="
+          grep -E '^CONFIG_(KSU|KSU_SUSFS|REKERNEL)=' out/.config || true
 
       - name: Compile GKI Kernel
         run: |
@@ -77,8 +135,9 @@ jobs:
           echo "===== KERNEL OUTPUT SIZE ====="
           ls -lh kernel/out/arch/arm64/boot/Image
 
-      - name: Prepare AnyKernel3 Package
+      - name: Prepare AnyKernel3
         run: |
+          set -e
           mkdir -p release
           cp kernel/out/arch/arm64/boot/Image AnyKernel3/Image
 
@@ -114,7 +173,7 @@ jobs:
             -x 'README.md' \
             -x '*placeholder*'
 
-      - name: Upload Flashable ZIP Artifact
+      - name: Upload Kernel ZIP
         uses: actions/upload-artifact@v4
         with:
           name: YannzProject-Malachite-GKI-6.1.174
